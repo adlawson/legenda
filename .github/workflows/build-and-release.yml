@@ -1,0 +1,143 @@
+name: build-and-release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, without the leading v (e.g. 0.1.0)"
+        required: true
+
+jobs:
+  # Produces the artifacts and nothing else, so a workflow_dispatch run is a
+  # complete dry run: it builds and generates the cask without releasing.
+  build:
+    runs-on: macos-26 # matches the Swift 6.2 toolchain the app is developed against
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=${version#v}" >>"$GITHUB_OUTPUT"
+
+      - name: Test
+        run: swift test
+
+      - name: Build release artifact
+        run: ./script/build-release.sh "${{ steps.version.outputs.version }}"
+
+      - name: Generate cask
+        run: |
+          ./script/build-brew-cask.sh \
+            --version "${{ steps.version.outputs.version }}" \
+            --zip ".release/Legenda-v${{ steps.version.outputs.version }}.zip"
+
+      - name: Upload app
+        uses: actions/upload-artifact@v7
+        with:
+          name: legenda-app
+          path: .release/Legenda-v${{ steps.version.outputs.version }}.zip
+          if-no-files-found: error
+
+      - name: Upload cask
+        uses: actions/upload-artifact@v7
+        with:
+          name: legenda-cask
+          path: .release/legenda.rb
+          if-no-files-found: error
+
+  # Only on a tag. Publishing needs no macOS, so this runs on Linux.
+  release:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      TAP: adlawson/homebrew-tap
+    steps:
+      - name: Download app
+        uses: actions/download-artifact@v8
+        with:
+          name: legenda-app
+          path: dist
+
+      - name: Download cask
+        uses: actions/download-artifact@v8
+        with:
+          name: legenda-cask
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "v$VERSION" \
+            --generate-notes \
+            "dist/Legenda-v$VERSION.zip"
+
+      # Cross-repo, so the default GITHUB_TOKEN is not enough: this needs a PAT
+      # with Contents and Pull requests write on the tap, as HOMEBREW_TAP_TOKEN.
+      - name: Open cask PR against the tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning title=Cask PR skipped::HOMEBREW_TAP_TOKEN is not set, so no PR was opened against $TAP. Add a fine-grained PAT with Contents + Pull requests write on $TAP as the HOMEBREW_TAP_TOKEN secret, then copy dist/legenda.rb into Casks/legenda.rb by hand for this release."
+            exit 0
+          fi
+
+          branch="legenda-$VERSION"
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${TAP}.git" tap
+          cd tap
+          git config user.name "adlawson"
+          git config user.email "adlawson@gmail.com"
+          git checkout -b "$branch"
+
+          mkdir -p Casks
+          cp ../dist/legenda.rb Casks/legenda.rb
+          git add Casks/legenda.rb
+          # `git diff --cached` rather than `git diff`, so a brand new file counts.
+          if git diff --cached --quiet; then
+            echo "::notice::Casks/legenda.rb is already up to date; no PR needed."
+            exit 0
+          fi
+
+          git commit -m "legenda $VERSION"
+          git push --force origin "$branch"
+
+          existing="$(gh pr list --repo "$TAP" --head "$branch" --state open --json url --jq '.[0].url // ""')"
+          if [ -n "$existing" ]; then
+            echo "::notice::Updated the existing PR $existing"
+            exit 0
+          fi
+
+          # A file rather than an inline --body: indented continuation lines would
+          # be read as markdown code blocks.
+          cat >../body.md <<EOF
+          Released by [\`build-and-release\`](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) from \`$GITHUB_REPOSITORY\` at \`v$VERSION\`.
+
+          The \`sha256\` is that of the zip attached to [that release](https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION).
+
+          Label this \`pr-pull\` to merge it via the tap's \`brew pr-pull\` workflow.
+          EOF
+
+          url="$(gh pr create --repo "$TAP" --base main --head "$branch" \
+            --title "legenda $VERSION" \
+            --body-file ../body.md)"
+          echo "::notice::Opened $url"
