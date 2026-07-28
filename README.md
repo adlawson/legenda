@@ -80,3 +80,7 @@ make cask VERSION=0.1.0
 
 The app is ad-hoc signed rather than notarised, so the cask strips the
 `com.apple.quarantine` flag on install.
+
+## Licence
+
+[MIT](LICENSE)
