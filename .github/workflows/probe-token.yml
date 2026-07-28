@@ -1,0 +1,48 @@
+name: probe-token
+
+# Throwaway: establishes empirically what GITHUB_TOKEN can do against
+# adlawson/homebrew-tap. Delete once the answer is recorded.
+on: workflow_dispatch
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAP: adlawson/homebrew-tap
+    steps:
+      - name: Probe cross-repo access
+        run: |
+          set +e
+          echo "===== 1. read the tap (public: works even unauthenticated) ====="
+          gh api "repos/$TAP" --jq .full_name; echo "exit=$?"
+
+          echo "===== 2. push access? (needs elevated access to the tap) ====="
+          gh api "repos/$TAP/collaborators/adlawson/permission" --jq .permission; echo "exit=$?"
+
+          echo "===== 3. list the tap's workflows (needs actions:read there) ====="
+          gh api "repos/$TAP/actions/workflows" --jq '.workflows[].name'; echo "exit=$?"
+
+          echo "===== 4. decisive: create a ref on the tap (needs contents:write) ====="
+          sha="$(gh api "repos/$TAP/git/ref/heads/main" --jq .object.sha)"
+          echo "main sha: ${sha:-<unavailable>}"
+          gh api -X POST "repos/$TAP/git/refs" \
+            -f ref=refs/heads/probe-token-delete-me -f sha="$sha"
+          created=$?
+          echo "create exit=$created"
+
+          echo "===== 5. clean up if step 4 succeeded ====="
+          if [ "$created" -eq 0 ]; then
+            gh api -X DELETE "repos/$TAP/git/refs/heads/probe-token-delete-me"
+            echo "delete exit=$?"
+          else
+            echo "nothing to clean up"
+          fi
+
+          echo "===== 6. can it dispatch a workflow in the tap? ====="
+          gh api "repos/$TAP/actions/workflows" --jq '.workflows[] | "\(.name) \(.path)"'
+          echo "(note: a dispatch also requires the target workflow to declare workflow_dispatch)"
