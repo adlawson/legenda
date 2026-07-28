@@ -158,6 +158,6 @@ jobs:
           EOF
 
           url="$(gh pr create --repo "$TAP" --base main --head "$branch" \
-            --title "legenda $VERSION" \
+            --title "Release: Legenda@$VERSION" \
             --body-file body.md)"
           echo "::notice::Opened $url"

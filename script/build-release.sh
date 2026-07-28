@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 APP_NAME="Legenda"
-BUNDLE_ID="com.andrewlawson.legenda"
+BUNDLE_ID="com.adlawson.legenda"
 
 version="${1:-}"
 if test -z "$version"; then
