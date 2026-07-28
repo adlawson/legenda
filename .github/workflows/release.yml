@@ -44,7 +44,7 @@ jobs:
       # The cask is an artifact rather than a release asset: it is copied into
       # adlawson/homebrew-tap as Casks/legenda.rb, not installed from here.
       - name: Upload cask
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: legenda-cask
           path: .release/legenda.rb
