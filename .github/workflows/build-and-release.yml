@@ -90,46 +90,66 @@ jobs:
             --generate-notes \
             "dist/Legenda-v$VERSION.zip"
 
-      # Cross-repo, so the default GITHUB_TOKEN is not enough: this needs a PAT
-      # with Contents and Pull requests write on the tap, as HOMEBREW_TAP_TOKEN.
+      # Cross-repo, which the default GITHUB_TOKEN cannot do: it is an
+      # installation token scoped to this repository, so pushing to the tap is
+      # denied to github-actions[bot]. Needs a PAT in HOMEBREW_TAP_TOKEN with
+      # Contents: write (branch + file) and Pull requests: write on the tap.
+      #
+      # Committing over the API rather than with git deliberately: there is no
+      # working copy to clone and no committer identity to configure, and GitHub
+      # attributes the commit to whoever owns the token.
       - name: Open cask PR against the tap
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          CASK_PATH: Casks/legenda.rb
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::warning title=Cask PR skipped::HOMEBREW_TAP_TOKEN is not set, so no PR was opened against $TAP. Add a fine-grained PAT with Contents + Pull requests write on $TAP as the HOMEBREW_TAP_TOKEN secret, then copy dist/legenda.rb into Casks/legenda.rb by hand for this release."
+            echo "::warning title=Cask PR skipped::HOMEBREW_TAP_TOKEN is not set, so no PR was opened against $TAP. Add a PAT with Contents and Pull requests write on $TAP as the HOMEBREW_TAP_TOKEN secret, then copy the legenda-cask artifact into $CASK_PATH by hand for this release."
+            exit 0
+          fi
+
+          cask_b64="$(base64 -w0 <dist/legenda.rb)"
+
+          # An existing cask has to be updated by blob sha; a missing one 404s and
+          # is created instead.
+          existing_json="$(gh api "repos/$TAP/contents/$CASK_PATH?ref=main" 2>/dev/null || echo '{}')"
+          existing_sha="$(jq -r '.sha // empty' <<<"$existing_json")"
+          # GitHub wraps the base64 payload; base64 -w0 does not.
+          existing_b64="$(jq -r '.content // empty' <<<"$existing_json" | tr -d '\n')"
+
+          if [ -n "$existing_b64" ] && [ "$existing_b64" = "$cask_b64" ]; then
+            echo "::notice::$CASK_PATH is already identical at $VERSION; nothing to do."
             exit 0
           fi
 
           branch="legenda-$VERSION"
-          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${TAP}.git" tap
-          cd tap
-          git config user.name "adlawson"
-          git config user.email "adlawson@gmail.com"
-          git checkout -b "$branch"
+          base_sha="$(gh api "repos/$TAP/git/ref/heads/main" --jq '.object.sha')"
 
-          mkdir -p Casks
-          cp ../dist/legenda.rb Casks/legenda.rb
-          git add Casks/legenda.rb
-          # `git diff --cached` rather than `git diff`, so a brand new file counts.
-          if git diff --cached --quiet; then
-            echo "::notice::Casks/legenda.rb is already up to date; no PR needed."
-            exit 0
-          fi
+          # Create the branch, or reset it if an earlier run left one behind.
+          gh api -X POST "repos/$TAP/git/refs" \
+            -f "ref=refs/heads/$branch" -f "sha=$base_sha" >/dev/null 2>&1 \
+            || gh api -X PATCH "repos/$TAP/git/refs/heads/$branch" \
+                 -f "sha=$base_sha" -F force=true >/dev/null
 
-          git commit -m "legenda $VERSION"
-          git push --force origin "$branch"
+          args=(-X PUT "repos/$TAP/contents/$CASK_PATH"
+                -f "message=legenda $VERSION"
+                -f "content=$cask_b64"
+                -f "branch=$branch")
+          if [ -n "$existing_sha" ]; then args+=(-f "sha=$existing_sha"); fi
 
-          existing="$(gh pr list --repo "$TAP" --head "$branch" --state open --json url --jq '.[0].url // ""')"
-          if [ -n "$existing" ]; then
-            echo "::notice::Updated the existing PR $existing"
+          commit="$(gh api "${args[@]}" --jq '.commit.sha')"
+          echo "::notice::Committed $commit to $TAP@$branch"
+
+          open_pr="$(gh pr list --repo "$TAP" --head "$branch" --state open --json url --jq '.[0].url // ""')"
+          if [ -n "$open_pr" ]; then
+            echo "::notice::Updated the existing PR $open_pr"
             exit 0
           fi
 
           # A file rather than an inline --body: indented continuation lines would
           # be read as markdown code blocks.
-          cat >../body.md <<EOF
+          cat >body.md <<EOF
           Released by [\`build-and-release\`](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) from \`$GITHUB_REPOSITORY\` at \`v$VERSION\`.
 
           The \`sha256\` is that of the zip attached to [that release](https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION).
@@ -139,5 +159,5 @@ jobs:
 
           url="$(gh pr create --repo "$TAP" --base main --head "$branch" \
             --title "legenda $VERSION" \
-            --body-file ../body.md)"
+            --body-file body.md)"
           echo "::notice::Opened $url"
