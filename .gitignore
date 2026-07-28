@@ -1,0 +1,6 @@
+.build/
+.release/
+Legenda.app/
+*.zip
+.DS_Store
+.claude/settings.local.json

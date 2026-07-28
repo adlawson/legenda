@@ -1,0 +1,45 @@
+import AppKit
+
+/// A panel that stays above other applications' windows without stealing their
+/// focus — the Google Meet pop-over behaviour.
+///
+/// Two details do the heavy lifting:
+///  - `.nonactivatingPanel` + `NSApp.setActivationPolicy(.accessory)` means
+///    clicking a button here does not deactivate Chrome.
+///  - `.canJoinAllSpaces` + `.fullScreenAuxiliary` lets it ride over a
+///    full-screen window instead of being left behind on another Space.
+///
+/// `.fullSizeContentView` makes the content view span the whole frame, so the
+/// background material runs behind the titlebar too. The frame still reserves
+/// 24pt for the titlebar, which is where the close button sits — the panel's top
+/// row is deliberately left empty to make room for it.
+public final class FloatingPanel: NSPanel {
+    public init(contentRect: NSRect) {
+        super.init(
+            contentRect: contentRect,
+            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView, .closable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+
+        isFloatingPanel = true
+        level = .floating
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        hidesOnDeactivate = false
+        isReleasedWhenClosed = false
+
+        titleVisibility = .hidden
+        titlebarAppearsTransparent = true
+        isMovableByWindowBackground = true
+        animationBehavior = .utilityWindow
+
+        standardWindowButton(.miniaturizeButton)?.isHidden = true
+        standardWindowButton(.zoomButton)?.isHidden = true
+    }
+
+    /// Needed so the agenda's text fields can take keystrokes. A non-activating
+    /// panel can be key while another app stays active, which is the point.
+    public override var canBecomeKey: Bool { true }
+
+    public override var canBecomeMain: Bool { false }
+}

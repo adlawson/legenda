@@ -1,0 +1,61 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, without the leading v (e.g. 0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # macos-26 to match the Swift 6.2 toolchain the app is developed against.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=${version#v}" >>"$GITHUB_OUTPUT"
+
+      - name: Test
+        run: swift test
+
+      - name: Build release artifact
+        run: ./script/build-release.sh "${{ steps.version.outputs.version }}"
+
+      - name: Generate cask
+        run: |
+          ./script/build-brew-cask.sh \
+            --version "${{ steps.version.outputs.version }}" \
+            --zip ".release/Legenda-v${{ steps.version.outputs.version }}.zip"
+
+      # The cask is an artifact rather than a release asset: it is copied into
+      # adlawson/homebrew-tap as Casks/legenda.rb, not installed from here.
+      - name: Upload cask
+        uses: actions/upload-artifact@v4
+        with:
+          name: legenda-cask
+          path: .release/legenda.rb
+
+      - name: Publish release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" \
+            --title "v$VERSION" \
+            --generate-notes \
+            ".release/Legenda-v$VERSION.zip"
