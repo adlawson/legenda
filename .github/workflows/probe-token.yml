@@ -1,12 +1,13 @@
 name: probe-token
 
-# Throwaway: establishes empirically what GITHUB_TOKEN can do against
-# adlawson/homebrew-tap. Delete once the answer is recorded.
+# Throwaway: attempts the real thing — pushing a branch to
+# adlawson/homebrew-tap and opening a PR there, using GITHUB_TOKEN via the gh
+# CLI. Delete once the answer is recorded.
 on: workflow_dispatch
 
 permissions:
   contents: read
-  actions: write
+  pull-requests: write # note: only ever applies to *this* repo
 
 jobs:
   probe:
@@ -15,34 +16,40 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAP: adlawson/homebrew-tap
     steps:
-      - name: Probe cross-repo access
+      - name: Try to open a PR on the tap with GITHUB_TOKEN
         run: |
           set +e
-          echo "===== 1. read the tap (public: works even unauthenticated) ====="
-          gh api "repos/$TAP" --jq .full_name; echo "exit=$?"
+          git config --global user.name "adlawson"
+          git config --global user.email "adlawson@gmail.com"
 
-          echo "===== 2. push access? (needs elevated access to the tap) ====="
-          gh api "repos/$TAP/collaborators/adlawson/permission" --jq .permission; echo "exit=$?"
+          echo "===== token identity ====="
+          gh api user --jq '.login' 2>&1 | tail -2
 
-          echo "===== 3. list the tap's workflows (needs actions:read there) ====="
-          gh api "repos/$TAP/actions/workflows" --jq '.workflows[].name'; echo "exit=$?"
+          echo "===== clone the tap ====="
+          git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${TAP}.git" tap 2>&1 | tail -3
+          echo "clone exit=$?"
+          cd tap || exit 1
 
-          echo "===== 4. decisive: create a ref on the tap (needs contents:write) ====="
-          sha="$(gh api "repos/$TAP/git/ref/heads/main" --jq .object.sha)"
-          echo "main sha: ${sha:-<unavailable>}"
-          gh api -X POST "repos/$TAP/git/refs" \
-            -f ref=refs/heads/probe-token-delete-me -f sha="$sha"
-          created=$?
-          echo "create exit=$created"
+          branch="probe-github-token-${GITHUB_RUN_ID}"
+          git checkout -q -b "$branch"
+          printf '# probe\n\nThrowaway file from a GITHUB_TOKEN access probe. Safe to delete.\n' >PROBE.md
+          git add PROBE.md
+          git commit -q -m "probe: can GITHUB_TOKEN push to this repo?"
 
-          echo "===== 5. clean up if step 4 succeeded ====="
-          if [ "$created" -eq 0 ]; then
-            gh api -X DELETE "repos/$TAP/git/refs/heads/probe-token-delete-me"
-            echo "delete exit=$?"
+          echo "===== git push the branch to the tap ====="
+          git push origin "$branch" 2>&1 | tail -5
+          push=${PIPESTATUS[0]}
+          echo "push exit=$push"
+
+          echo "===== gh pr create against the tap ====="
+          gh pr create --repo "$TAP" --base main --head "$branch" \
+            --title "probe: GITHUB_TOKEN cross-repo PR" \
+            --body "Throwaway probe to establish whether GITHUB_TOKEN can open a PR across repositories. Safe to close and delete the branch." 2>&1 | tail -5
+          echo "pr create exit=${PIPESTATUS[0]}"
+
+          echo "===== summary ====="
+          if [ "$push" -eq 0 ]; then
+            echo "PUSH SUCCEEDED — GITHUB_TOKEN can write to $TAP"
           else
-            echo "nothing to clean up"
+            echo "PUSH FAILED — GITHUB_TOKEN cannot write to $TAP"
           fi
-
-          echo "===== 6. can it dispatch a workflow in the tap? ====="
-          gh api "repos/$TAP/actions/workflows" --jq '.workflows[] | "\(.name) \(.path)"'
-          echo "(note: a dispatch also requires the target workflow to declare workflow_dispatch)"
