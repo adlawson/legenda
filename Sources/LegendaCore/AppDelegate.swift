@@ -130,14 +130,33 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func presentMenu() {
+    /// Label for the menu's inert title row. Falls back to the bare name when
+    /// there's no bundle to read a version from, as when running the binary
+    /// directly rather than the .app.
+    static func versionTitle(_ version: String?) -> String {
+        guard let version, !version.isEmpty else { return "Legenda" }
+        return "Legenda v\(version)"
+    }
+
+    private var bundleVersion: String? {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    }
+
+    func makeMenu() -> NSMenu {
         let menu = NSMenu()
 
-        let toggle = NSMenuItem(
-            title: (panel?.isVisible ?? false) ? "Hide Legenda" : "Show Legenda",
-            action: #selector(togglePanelFromMenu), keyEquivalent: "")
-        toggle.target = self
-        menu.addItem(toggle)
+        // A nil action leaves this disabled under NSMenu's automatic enabling, so
+        // it reads as a heading rather than something selectable.
+        let title = NSMenuItem(title: Self.versionTitle(bundleVersion), action: nil, keyEquivalent: "")
+        title.isEnabled = false
+        menu.addItem(title)
+        menu.addItem(.separator())
+
+        // Always "Open": it brings the panel to the front whether or not it is
+        // already showing, so the wording never has to be second-guessed.
+        let open = NSMenuItem(title: "Open Legenda", action: #selector(showPanel), keyEquivalent: "")
+        open.target = self
+        menu.addItem(open)
 
         if engine.phase != .setup {
             let pause = NSMenuItem(
@@ -159,14 +178,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 title: "Quit Legenda", action: #selector(NSApplication.terminate(_:)),
                 keyEquivalent: "q"))
 
+        return menu
+    }
+
+    private func presentMenu() {
         // Attaching, clicking, then detaching is the standard way to show a menu
         // for a status item that also handles plain clicks.
-        statusItem?.menu = menu
+        statusItem?.menu = makeMenu()
         statusItem?.button?.performClick(nil)
         statusItem?.menu = nil
     }
-
-    @objc private func togglePanelFromMenu() { togglePanel() }
 
     @objc private func pauseFromMenu() {
         engine.togglePause()
