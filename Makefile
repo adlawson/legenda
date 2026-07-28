@@ -36,13 +36,13 @@ kill:
 	@pkill -x $(APP_NAME) 2>/dev/null || true
 
 # Normally done by the release workflow on a v* tag; these are for building the
-# same artifacts locally. Usage: make release VERSION=0.1.0
+# same artifacts locally. Usage: make release VERSION=20260728
 release:
-	@test -n "$(VERSION)" || (echo "usage: make release VERSION=0.1.0" >&2; exit 1)
+	@test -n "$(VERSION)" || (echo "usage: make release VERSION=20260728" >&2; exit 1)
 	./script/build-release.sh $(VERSION)
 
 cask:
-	@test -n "$(VERSION)" || (echo "usage: make cask VERSION=0.1.0" >&2; exit 1)
+	@test -n "$(VERSION)" || (echo "usage: make cask VERSION=20260728" >&2; exit 1)
 	./script/build-brew-cask.sh --version $(VERSION) \
 		--zip .release/$(APP_NAME)-v$(VERSION).zip
 

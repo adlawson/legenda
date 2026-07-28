@@ -62,11 +62,16 @@ doesn't hear them.
 
 ## Releasing
 
+Versions are dates — `YYYYMMDD`, with an optional pre-release suffix such as
+`20260728-rc1`. The suffix is kept out of `CFBundleVersion`, which Apple
+specifies as digits and periods only, so that carries the date alone while
+`CFBundleShortVersionString` gets the full string.
+
 Tag a version and GitHub Actions builds the universal app, publishes the release
 and attaches the zip:
 
 ```sh
-git tag v0.1.0 && git push origin v0.1.0
+git tag v20260728 && git push origin v20260728
 ```
 
 The same run produces `legenda.rb` as a workflow artifact, which is the cask to
@@ -74,8 +79,8 @@ copy into [adlawson/homebrew-tap](https://github.com/adlawson/homebrew-tap) as
 `Casks/legenda.rb`. To build both locally instead:
 
 ```sh
-make release VERSION=0.1.0
-make cask VERSION=0.1.0
+make release VERSION=20260728
+make cask VERSION=20260728
 ```
 
 The app is ad-hoc signed rather than notarised, so the cask strips the

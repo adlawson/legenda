@@ -11,10 +11,19 @@ BUNDLE_ID="com.adlawson.legenda"
 
 version="${1:-}"
 if test -z "$version"; then
-    echo "usage: $0 <version>    e.g. $0 0.1.0" >/dev/stderr
+    echo "usage: $0 <version>    e.g. $0 20260728, or $0 20260728-rc1" >/dev/stderr
     exit 1
 fi
 version="${version#v}"  # tolerate being handed a tag name
+
+# Date versioning, optionally with a pre-release suffix. CFBundleVersion is
+# specified as digits and periods only, so a suffix like -rc1 can't go there;
+# the full string lives in CFBundleShortVersionString instead.
+build_version="${version%%-*}"
+if ! printf '%s' "$build_version" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; then
+    echo "$version does not start with a numeric version, so CFBundleVersion cannot be derived" >/dev/stderr
+    exit 1
+fi
 
 out=".release"
 stage="$out/${APP_NAME}-v${version}"
@@ -31,7 +40,7 @@ cp Resources/Info.plist "$bundle/Contents/Info.plist"
 
 plist="$bundle/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $version" "$plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_version" "$plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$plist"
 
 # Ad-hoc signature: there's no Developer ID, so this is not notarised and macOS
