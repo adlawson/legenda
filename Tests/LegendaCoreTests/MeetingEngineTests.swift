@@ -364,6 +364,72 @@ struct MeetingEngineTests {
         #expect(engine.spent(engine.items[0]) == 180)
     }
 
+    // MARK: - The back control
+
+    @Test("On the first item, back returns to the editable agenda")
+    func backOnFirstItemResets() {
+        let (engine, clock) = makeEngine()
+        engine.start()
+        clock.advance(90)
+        #expect(!engine.canGoBack)
+
+        engine.back()
+
+        #expect(engine.phase == .setup)
+        #expect(engine.isEditable)
+        // The agenda survives; only the elapsed time is discarded.
+        #expect(engine.items.map(\.title) == ["Intro", "Updates", "Buffer"])
+        #expect(engine.spent(engine.items[0]) == 0)
+    }
+
+    @Test("Past the first item, back steps back rather than resetting")
+    func backLaterStepsToPreviousItem() {
+        let (engine, clock) = makeEngine()
+        engine.start()
+        clock.advance(120)
+        engine.next()
+        #expect(engine.currentIndex == 1)
+        #expect(engine.canGoBack)
+
+        engine.back()
+
+        #expect(engine.phase == .running)
+        #expect(engine.currentIndex == 0)
+        // Intro keeps the time it had actually used.
+        #expect(engine.spent(engine.items[0]) == 120)
+    }
+
+    @Test("The two behaviours hand over cleanly at the first item")
+    func backHandsOverAtTheBoundary() {
+        let (engine, clock) = makeEngine()
+        engine.start()
+        clock.advance(120)
+        engine.next()
+
+        // Once back at the first item there is nothing left to undo...
+        engine.back()
+        #expect(engine.currentIndex == 0)
+        #expect(engine.phase == .running)
+        #expect(!engine.canGoBack)
+
+        // ...so the next press returns to the agenda.
+        engine.back()
+        #expect(engine.phase == .setup)
+    }
+
+    @Test("Back returns to the agenda from a paused first item too")
+    func backWhilePausedOnFirstItem() {
+        let (engine, clock) = makeEngine()
+        engine.start()
+        clock.advance(30)
+        engine.togglePause()
+        #expect(engine.phase == .paused)
+
+        engine.back()
+        #expect(engine.phase == .setup)
+        #expect(engine.isEditable)
+    }
+
     @Test("With no buffer item at all, an overrun is immediately overtime")
     func noBufferMeansImmediateOvertime() {
         let (engine, clock) = makeEngine([("One", 1, false), ("Two", 1, false)])

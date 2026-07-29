@@ -128,10 +128,14 @@ struct RunningView: View {
 
     private var controls: some View {
         HStack(spacing: 6) {
-            ControlButton(systemImage: "arrow.uturn.backward", help: "Back to previous item") {
-                engine.previous()
+            // Never disabled: on the first item there is no previous item to step
+            // to, so it returns to the agenda instead.
+            ControlButton(
+                systemImage: "arrow.uturn.backward",
+                help: engine.canGoBack ? "Back to previous item" : "Back to the agenda"
+            ) {
+                engine.back()
             }
-            .disabled(!engine.canGoBack)
 
             ControlButton(title: "+1 min", help: "Give this item another minute, taken from the buffer") {
                 engine.addMinute()

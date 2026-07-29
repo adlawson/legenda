@@ -359,6 +359,18 @@ public final class MeetingEngine: ObservableObject {
         }
     }
 
+    /// The back control. Steps to the previous item, or — on the first item, where
+    /// there is nothing to step back to — returns to the agenda, exactly as
+    /// "Reset to Agenda" does. So back always undoes the last thing you did,
+    /// whether that was advancing an item or starting the meeting.
+    public func back() {
+        if canGoBack {
+            previous()
+        } else {
+            reset()
+        }
+    }
+
     public func previous() {
         guard let restored = undoStack.popLast() else { return }
         restore(restored)
