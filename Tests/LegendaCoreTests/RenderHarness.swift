@@ -23,12 +23,15 @@ struct RenderHarness {
         backdrop.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
 
         let host = NSHostingView(rootView: RootView(engine: engine))
-        // Render at the panel's real frame height: AppKit reserves 24pt for the
-        // titlebar on top of the content's intrinsic height, and the content is
-        // laid out across the whole thing.
+        // Width is fixed to the panel's opening width rather than measured: the
+        // content is horizontally flexible now, so its fitting width is the bare
+        // minimum, not what the panel actually opens at. Height is still measured,
+        // since the content genuinely drives it, plus AppKit's 24pt titlebar.
         let titlebarReservation: CGFloat = 24
-        var size = host.fittingSize
-        size.height += titlebarReservation
+        host.frame = NSRect(x: 0, y: 0, width: RootView.defaultWidth, height: 1)
+        host.layoutSubtreeIfNeeded()
+        let size = NSSize(
+            width: RootView.defaultWidth, height: host.fittingSize.height + titlebarReservation)
         host.frame = NSRect(origin: .zero, size: size)
         backdrop.frame = host.frame
         backdrop.addSubview(host)

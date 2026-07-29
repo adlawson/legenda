@@ -5,6 +5,7 @@ import SwiftUI
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = AgendaStore()
+    private let panelStore = PanelStore()
     private let sounds = SoundPlayer()
     private lazy var engine = MeetingEngine(items: store.load())
 
@@ -13,10 +14,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     private var ticker: Timer?
     private var saveSubscription: AnyCancellable?
 
-    /// The panel is sized by its content, and AppKit anchors windows by their
-    /// bottom-left. Without pinning, the panel would appear to crawl up the
+    /// The panel's height is sized by its content, and AppKit anchors windows by
+    /// their bottom-left. Without pinning, the panel would appear to crawl up the
     /// screen every time the agenda list collapsed on Start.
-    private var pinnedTopLeft: CGPoint?
+    ///
+    /// Only the top edge is pinned, not the whole top-left corner: the panel is
+    /// horizontally resizable, and fixing the corner would fight a drag on the left
+    /// edge by snapping it back.
+    private var pinnedTop: CGFloat?
     private var isAdjustingFrame = false
 
     public override init() { super.init() }
@@ -41,6 +46,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     public func applicationWillTerminate(_ notification: Notification) {
         store.save(engine.items)
+        if let panel { panelStore.save(panel.frame) }
         ticker?.invalidate()
     }
 
@@ -210,7 +216,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Panel
 
     private func makePanel() {
-        let panel = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 258, height: 300))
+        let panel = FloatingPanel(
+            contentRect: NSRect(x: 0, y: 0, width: RootView.defaultWidth, height: 300))
 
         let backdrop = NSVisualEffectView()
         backdrop.material = .hudWindow
@@ -240,28 +247,44 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSWindow.didMoveNotification, object: panel)
     }
 
-    /// Top-right of the main screen, below the menubar — out of the way of a
-    /// call window's controls, which sit centre-bottom.
+    /// Restore the remembered width and position, else the top-right of the main
+    /// screen, below the menubar — out of the way of a call window's controls, which
+    /// sit centre-bottom.
+    ///
+    /// Only the width and origin are restored. The height belongs to the content, so
+    /// a saved height would be overridden immediately anyway.
     private func positionInitially(_ panel: NSPanel) {
+        if let saved = panelStore.usableFrame() {
+            panel.setContentSize(NSSize(width: saved.width, height: panel.contentLayoutRect.height))
+            panel.setFrameTopLeftPoint(CGPoint(x: saved.minX, y: saved.maxY))
+            pinnedTop = panel.frame.maxY
+            return
+        }
+
         guard let screen = NSScreen.main else { return }
         let visible = screen.visibleFrame
         let origin = CGPoint(
             x: visible.maxX - panel.frame.width - 20,
             y: visible.maxY - panel.frame.height - 20)
         panel.setFrameOrigin(origin)
-        pinnedTopLeft = CGPoint(x: panel.frame.minX, y: panel.frame.maxY)
+        pinnedTop = panel.frame.maxY
     }
 
     @objc private func panelDidResize() {
-        guard let panel, let pinned = pinnedTopLeft, !isAdjustingFrame else { return }
-        isAdjustingFrame = true
-        panel.setFrameTopLeftPoint(pinned)
-        isAdjustingFrame = false
+        guard let panel, let top = pinnedTop, !isAdjustingFrame else { return }
+        // Hold the top edge while letting x and width be whatever the drag made them.
+        if panel.frame.maxY != top {
+            isAdjustingFrame = true
+            panel.setFrameTopLeftPoint(CGPoint(x: panel.frame.minX, y: top))
+            isAdjustingFrame = false
+        }
+        panelStore.save(panel.frame)
     }
 
     @objc private func panelDidMove() {
         guard let panel, !isAdjustingFrame else { return }
-        pinnedTopLeft = CGPoint(x: panel.frame.minX, y: panel.frame.maxY)
+        pinnedTop = panel.frame.maxY
+        panelStore.save(panel.frame)
     }
 
     @objc private func showPanel() {

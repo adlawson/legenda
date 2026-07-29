@@ -17,10 +17,19 @@ public final class FloatingPanel: NSPanel {
     public init(contentRect: NSRect) {
         super.init(
             contentRect: contentRect,
-            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView, .closable, .utilityWindow],
+            styleMask: [
+                .nonactivatingPanel, .titled, .fullSizeContentView, .closable, .utilityWindow,
+                .resizable,
+            ],
             backing: .buffered,
             defer: false
         )
+
+        // Horizontal only, in effect: the content's own height constraint pins the
+        // vertical size, so a drag on the bottom edge springs back. Only the width
+        // is bounded here; bounding the height would fight that constraint.
+        contentMinSize = NSSize(width: 200, height: 0)
+        contentMaxSize = NSSize(width: 640, height: 10_000)
 
         isFloatingPanel = true
         level = .floating
