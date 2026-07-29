@@ -64,6 +64,12 @@ struct RenderHarness {
     @Test func renderAll() {
         for dark in [true, false] {
             render(engine(advance: -1), "setup", dark: dark)
+
+            // Armed, waiting for a scheduled start.
+            let clock = FakeClock()
+            let armed = MeetingEngine(items: AgendaStore.starterAgenda, now: clock.now)
+            armed.schedule(at: clock.current.addingTimeInterval(154))
+            render(armed, "scheduled", dark: dark)
             render(engine(advance: 45), "running", dark: dark)
             render(engine(advance: 195), "overrun", dark: dark)
 

@@ -30,8 +30,15 @@ public final class FloatingPanel: NSPanel {
 
         titleVisibility = .hidden
         titlebarAppearsTransparent = true
-        isMovableByWindowBackground = true
         animationBehavior = .utilityWindow
+
+        // Deliberately NOT movable by window background. `NSHostingView` reports
+        // mouseDownCanMoveWindow = true for its whole surface, and a plain SwiftUI
+        // Image creates no AppKit view of its own, so AppKit would begin a window
+        // drag on mouse-down and the agenda's reorder handles would never receive
+        // it. Only real AppKit views (the TextFields) opt out on their own.
+        // The titlebar strip remains a drag region, so the panel can still be moved.
+        isMovableByWindowBackground = false
 
         standardWindowButton(.miniaturizeButton)?.isHidden = true
         standardWindowButton(.zoomButton)?.isHidden = true

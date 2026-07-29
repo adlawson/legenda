@@ -59,9 +59,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func tick() {
+        let phaseBefore = engine.phase
         engine.tick()
         for cue in engine.consumeCues() {
             sounds.play(cue)
+        }
+        // A scheduled start is the only way tick() can begin a meeting on its own,
+        // so surface the panel — you may well have hidden it, or be looking at the
+        // call. The panel is non-activating, so focus stays where it is.
+        if phaseBefore == .setup, engine.phase == .running {
+            panel?.orderFrontRegardless()
         }
         refreshStatusItem()
     }
@@ -82,7 +89,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let symbol: String
         switch engine.phase {
-        case .setup: symbol = "timer"
+        case .setup: symbol = engine.isScheduled ? "alarm.fill" : "timer"
         case .running: symbol = engine.isOvertime ? "exclamationmark.triangle.fill" : "timer"
         case .paused: symbol = "pause.fill"
         case .finished: symbol = "checkmark"
@@ -90,11 +97,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Legenda")
 
         // Idle states show the symbol alone; the time and item name only earn
-        // menubar space while a meeting is actually running.
+        // menubar space while a meeting is actually running — or is about to.
         let text: String
         switch engine.phase {
         case .setup:
-            text = ""
+            text = engine.secondsUntilStart.map { " \($0.clockString)" } ?? ""
         case .running, .paused:
             if let current = engine.currentItem {
                 text = " \(engine.spent(current).clockString) · \(shortened(currentTitle(current)))"

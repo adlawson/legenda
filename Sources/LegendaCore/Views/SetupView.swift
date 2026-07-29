@@ -3,11 +3,17 @@ import SwiftUI
 struct SetupView: View {
     @ObservedObject var engine: MeetingEngine
 
+    /// The time shown in the picker. Only a placeholder until armed — the arm
+    /// button recomputes it, so a panel left open for hours doesn't offer a stale
+    /// guess.
+    @State private var startTime: Date = SetupView.nextHalfHour()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(spacing: 6) {
                 // Left intentionally empty: the titlebar's close button sits here.
                 Spacer()
+                scheduleControl
                 Button(action: engine.start) {
                     Image(systemName: "play.fill")
                         .font(.system(size: 11))
@@ -20,22 +26,21 @@ struct SetupView: View {
             }
 
             VStack(spacing: 3) {
-                ForEach(engine.items) { item in
-                    AgendaRow(engine: engine, item: item)
+                ForEach(Array(engine.items.enumerated()), id: \.element.id) { index, item in
+                    AgendaRow(engine: engine, item: item, index: index)
                 }
             }
 
             Button {
                 engine.addItem(minutes: 5)
             } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "plus")
-                    Text("Add item")
-                }
-                .font(.system(size: 11))
-                .foregroundStyle(Palette.dim)
+                Image(systemName: "plus")
+                    .font(.system(size: 11))
+                    .frame(width: 26, height: 20)
+                    .background(Palette.track, in: RoundedRectangle(cornerRadius: 5))
             }
             .buttonStyle(.plain)
+            .help("Add an agenda item")
 
             Divider()
 
@@ -56,13 +61,113 @@ struct SetupView: View {
             }
         }
     }
+
+    // MARK: - Scheduled start
+
+    /// Scheduling is entirely opt-in: until it's armed, the only sign of it is a
+    /// single alarm button. The on/off state is read from the engine rather than
+    /// tracked separately here, so the two can't drift apart.
+    @ViewBuilder private var scheduleControl: some View {
+        if engine.isScheduled {
+            // The toggle leads the inputs it governs, and stays put as the picker
+            // appears and disappears around it.
+            Button(action: engine.cancelSchedule) {
+                Image(systemName: "alarm.fill")
+                    .font(.system(size: 10))
+                    .frame(width: 20, height: 20)
+                    .background(Palette.track, in: RoundedRectangle(cornerRadius: 5))
+            }
+            .buttonStyle(.plain)
+            .help("Scheduled for \(Self.clockFormatter.string(from: engine.scheduledStart ?? Date())) — click to cancel")
+
+            // A DatePicker reads the Mac's locale and timezone with no extra work.
+            DatePicker("", selection: $startTime, displayedComponents: .hourAndMinute)
+                .labelsHidden()
+                .datePickerStyle(.field)
+                .font(.system(size: 11))
+                .fixedSize()
+                .onChange(of: startTime) { _, _ in rearm() }
+
+            if let remaining = engine.secondsUntilStart {
+                Text(remaining.clockString)
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(Palette.dim)
+            }
+        } else {
+            Button {
+                // Arm at the next half hour; the picker then appears so the time
+                // can be adjusted from there. The instant is passed directly
+                // rather than read back from `startTime`, which within this
+                // closure would still hold its previous value.
+                let boundary = Self.nextHalfHour()
+                startTime = boundary
+                engine.schedule(at: boundary)
+            } label: {
+                Image(systemName: "alarm")
+                    .font(.system(size: 10))
+                    .frame(width: 20, height: 20)
+                    .background(Palette.track, in: RoundedRectangle(cornerRadius: 5))
+            }
+            .buttonStyle(.plain)
+            .disabled(engine.items.isEmpty)
+            .help("Start automatically at a set time")
+        }
+    }
+
+    /// Arm for the picked time, or disarm if it has already passed — so editing the
+    /// picker to a past time can't silently leave the old schedule armed.
+    private func rearm() {
+        if let instant = resolvedStart {
+            engine.schedule(at: instant)
+        } else {
+            engine.cancelSchedule()
+        }
+    }
+
+    /// Today's date at the picked time, in the Mac's own calendar and timezone.
+    /// `nil` once that moment has passed, which disables arming rather than
+    /// silently rolling over to tomorrow.
+    private var resolvedStart: Date? {
+        let calendar = Calendar.current
+        let picked = calendar.dateComponents([.hour, .minute], from: startTime)
+        guard
+            let candidate = calendar.date(
+                bySettingHour: picked.hour ?? 0, minute: picked.minute ?? 0, second: 0,
+                of: Date())
+        else { return nil }
+        return candidate > Date() ? candidate : nil
+    }
+
+    /// The next `:00` or `:30`, which is when meetings actually start. Always
+    /// strictly in the future, including when called exactly on a boundary, so
+    /// `MeetingEngine.schedule(at:)`'s `instant > now()` guard can't reject it.
+    private static func nextHalfHour() -> Date {
+        let calendar = Calendar.current
+        let now = Date()
+        // Truncate to the minute first, so the result is a clean boundary.
+        let truncated =
+            calendar.date(
+                from: calendar.dateComponents([.year, .month, .day, .hour, .minute], from: now))
+            ?? now
+        let step = 30 - (calendar.component(.minute, from: now) % 30)
+        return truncated.addingTimeInterval(TimeInterval(step * 60))
+    }
+
+    private static let clockFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        return formatter
+    }()
 }
 
 private struct AgendaRow: View {
     @ObservedObject var engine: MeetingEngine
     let item: AgendaItem
+    let index: Int
 
     @State private var isHovering = false
+    @State private var isDropTarget = false
     /// The minutes field is backed by a string rather than bound straight to an
     /// Int. A `format:`-based binding reparses on every keystroke, so clearing
     /// the field fails to parse and SwiftUI writes the old number back — typing
@@ -92,14 +197,27 @@ private struct AgendaRow: View {
         return measured > titleFieldWidth - 2 ? 2 : 0
     }
 
-    init(engine: MeetingEngine, item: AgendaItem) {
+    init(engine: MeetingEngine, item: AgendaItem, index: Int) {
         self.engine = engine
         self.item = item
+        self.index = index
         _minutesText = State(initialValue: String(item.plannedSeconds / 60))
     }
 
     var body: some View {
         HStack(spacing: 5) {
+            // A dedicated handle rather than dragging the row itself: a drag
+            // starting in either TextField has to keep selecting text.
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 9))
+                // Palette.item, matching an active buffer diamond: this is the only
+                // way to reorder, so it needs to read at full contrast.
+                .foregroundStyle(Palette.item)
+                .frame(width: 11, height: 14)
+                .opacity(isHovering ? 1 : 0)
+                .draggable(item.id.uuidString)
+                .help("Drag to reorder")
+
             TextField("Item", text: titleBinding)
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
@@ -177,20 +295,26 @@ private struct AgendaRow: View {
             RoundedRectangle(cornerRadius: 5)
                 .fill(Palette.track.opacity(item.isBuffer ? 0.5 : 0.25))
         )
+        // Outlining the whole row says "this row's position", which is
+        // unambiguous in a way that an edge rule between rows is not.
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .strokeBorder(Palette.item, lineWidth: 1)
+                .opacity(isDropTarget ? 1 : 0)
+        )
         .onHover { isHovering = $0 }
+        .dropDestination(for: String.self) { ids, _ in
+            guard let raw = ids.first, let dragged = UUID(uuidString: raw) else { return false }
+            engine.moveItem(id: dragged, to: index)
+            return true
+        } isTargeted: { targeted in
+            isDropTarget = targeted
+        }
     }
 
     private var titleBinding: Binding<String> {
         Binding(
             get: { item.title },
             set: { engine.setTitle($0, for: item.id) })
-    }
-
-    /// Minutes is the right granularity for planning an agenda; the engine keeps
-    /// seconds internally so that borrowing and settling stay exact.
-    private var minutesBinding: Binding<Int> {
-        Binding(
-            get: { item.plannedSeconds / 60 },
-            set: { engine.setSeconds(max(0, $0) * 60, for: item.id) })
     }
 }

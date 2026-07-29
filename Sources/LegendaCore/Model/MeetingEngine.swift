@@ -44,9 +44,17 @@ public final class MeetingEngine: ObservableObject {
     private var undoStack: [Snapshot] = []
     private var pendingCues: [SoundCue] = []
 
+    /// When armed, the absolute instant the meeting should begin. Resolved once
+    /// when armed rather than held as a wall-clock time, so changing timezone
+    /// afterwards cannot silently move it.
+    @Published public private(set) var scheduledStart: Date?
+
     /// Cue edge-detection state.
     private var lastWarningSecond: Int?
     private var wasOverrunning = false
+    /// Separate from `lastWarningSecond`: that one belongs to the running item,
+    /// this one to the pre-start countdown.
+    private var lastCountdownSecond: Int?
 
     private let now: () -> Date
 
@@ -115,6 +123,22 @@ public final class MeetingEngine: ObservableObject {
     public func move(fromOffsets: IndexSet, toOffset: Int) {
         guard isEditable else { return }
         items.move(fromOffsets: fromOffsets, toOffset: toOffset)
+    }
+
+    /// Move the item with `id` so that it ends up at `destination`.
+    ///
+    /// `Array.move(fromOffsets:toOffset:)` inserts *before* `toOffset`, which means
+    /// a downward move needs `destination + 1`; passing the raw destination
+    /// silently no-ops a move down by one place. Keeping that arithmetic here means
+    /// the drag-and-drop code never has to think about it.
+    public func moveItem(id: UUID, to destination: Int) {
+        guard isEditable,
+            let from = items.firstIndex(where: { $0.id == id }),
+            items.indices.contains(destination),
+            from != destination
+        else { return }
+        let offset = destination > from ? destination + 1 : destination
+        items.move(fromOffsets: IndexSet(integer: from), toOffset: offset)
     }
 
     // MARK: - Derived reads
@@ -251,6 +275,16 @@ public final class MeetingEngine: ObservableObject {
     // MARK: - Actions
 
     public func start() {
+        start(at: now())
+    }
+
+    /// Begins the meeting as though it had started at `instant`.
+    ///
+    /// Passing an instant in the past is how a scheduled start catches up: elapsed
+    /// time is derived as `now() - segmentStart`, so firing at 14:35 for a 14:30
+    /// schedule yields a meeting already five minutes in, with a projected finish
+    /// that reflects what actually happened. There is no separate catch-up path.
+    public func start(at instant: Date) {
         guard phase == .setup, !items.isEmpty else { return }
         base = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.plannedSeconds) })
         banked = [:]
@@ -258,9 +292,34 @@ public final class MeetingEngine: ObservableObject {
         undoStack = []
         wasOverrunning = false
         lastWarningSecond = nil
-        segmentStart = now()
+        lastCountdownSecond = nil
+        scheduledStart = nil
+        segmentStart = instant
         phase = .running
         if items[0].isBuffer { pendingCues.append(.bufferStart) }
+    }
+
+    // MARK: - Scheduling
+
+    /// Arm an automatic start. Ignored outside setup, or for an instant that has
+    /// already passed — there would be nothing to wait for.
+    public func schedule(at instant: Date) {
+        guard phase == .setup, instant > now() else { return }
+        scheduledStart = instant
+        lastCountdownSecond = nil
+    }
+
+    public func cancelSchedule() {
+        scheduledStart = nil
+        lastCountdownSecond = nil
+    }
+
+    public var isScheduled: Bool { scheduledStart != nil }
+
+    /// Whole seconds until an armed start, floored at zero. `nil` when not armed.
+    public var secondsUntilStart: Int? {
+        guard let scheduledStart else { return nil }
+        return max(0, Int(scheduledStart.timeIntervalSince(now()).rounded(.up)))
     }
 
     public func togglePause() {
@@ -326,6 +385,8 @@ public final class MeetingEngine: ObservableObject {
         undoStack = []
         pendingCues = []
         lastWarningSecond = nil
+        lastCountdownSecond = nil
+        scheduledStart = nil
         wasOverrunning = false
         phase = .setup
     }
@@ -336,6 +397,25 @@ public final class MeetingEngine: ObservableObject {
     /// call at any cadence; all state here is edge-detected, not accumulated.
     public func tick() {
         objectWillChange.send()
+
+        // An armed start counts down with the same three Tinks an item uses as its
+        // time runs out, then fires.
+        if phase == .setup, let scheduled = scheduledStart {
+            let untilStart = max(0, Int(scheduled.timeIntervalSince(now()).rounded(.up)))
+            if (1...3).contains(untilStart), lastCountdownSecond != untilStart {
+                lastCountdownSecond = untilStart
+                pendingCues.append(.warning)
+            }
+            if untilStart > 3 { lastCountdownSecond = nil }
+
+            if now() >= scheduled {
+                // Backdated deliberately, so a start delayed past the scheduled
+                // instant (a late tick, or waking from sleep) is already elapsed.
+                start(at: scheduled)
+                pendingCues.append(.itemChange)
+            }
+        }
+
         guard phase == .running, currentItem != nil else { return }
 
         let remaining = itemRemaining

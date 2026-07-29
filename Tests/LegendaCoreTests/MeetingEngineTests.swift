@@ -38,6 +38,188 @@ struct MeetingEngineTests {
         #expect(engine.items[0].plannedSeconds == 120)
     }
 
+    // MARK: - Reordering
+
+    @Test("Moving an item lands it exactly at the requested position")
+    func moveItemPositions() {
+        // Four distinct titles, so an off-by-one cannot hide behind a symmetry.
+        func fresh() -> MeetingEngine {
+            makeEngine([("A", 1, false), ("B", 2, false), ("C", 3, false), ("D", 4, false)]).0
+        }
+        func titles(_ e: MeetingEngine) -> [String] { e.items.map(\.title) }
+
+        // Down one place: the case that silently no-ops without the +1.
+        let down = fresh()
+        down.moveItem(id: down.items[0].id, to: 1)
+        #expect(titles(down) == ["B", "A", "C", "D"])
+
+        // Up one place.
+        let up = fresh()
+        up.moveItem(id: up.items[2].id, to: 1)
+        #expect(titles(up) == ["A", "C", "B", "D"])
+
+        // To the very end, and to the very front.
+        let last = fresh()
+        last.moveItem(id: last.items[0].id, to: 3)
+        #expect(titles(last) == ["B", "C", "D", "A"])
+
+        let first = fresh()
+        first.moveItem(id: first.items[3].id, to: 0)
+        #expect(titles(first) == ["D", "A", "B", "C"])
+    }
+
+    @Test("Moving to its own position, or to a bogus one, changes nothing")
+    func moveItemNoOps() {
+        let (engine, _) = makeEngine()
+        let before = engine.items.map(\.title)
+
+        engine.moveItem(id: engine.items[1].id, to: 1)
+        engine.moveItem(id: engine.items[0].id, to: 99)
+        engine.moveItem(id: UUID(), to: 0)
+        #expect(engine.items.map(\.title) == before)
+    }
+
+    @Test("Reordering is frozen once the meeting starts")
+    func moveItemFrozenWhenRunning() {
+        let (engine, _) = makeEngine()
+        engine.start()
+        let before = engine.items.map(\.title)
+        engine.moveItem(id: engine.items[0].id, to: 2)
+        #expect(engine.items.map(\.title) == before)
+    }
+
+    @Test("Slack is positional, so moving the buffer earlier withdraws it")
+    func movingBufferChangesSlack() {
+        // Buffer last: its 5 minutes are available to the first item.
+        let (engine, _) = makeEngine()
+        engine.start()
+        #expect(engine.slackTotal == 5 * 60)
+
+        // Buffer first: nothing ahead of the playhead can fund an overrun.
+        let (moved, _) = makeEngine()
+        moved.moveItem(id: moved.items[2].id, to: 0)
+        #expect(moved.items.map(\.title) == ["Buffer", "Intro", "Updates"])
+        moved.start()
+        #expect(moved.slackTotal == 0)
+    }
+
+    // MARK: - Scheduled start
+
+    @Test("An armed schedule fires once the clock reaches it")
+    func scheduleFires() {
+        let (engine, clock) = makeEngine()
+        engine.schedule(at: clock.current.addingTimeInterval(60))
+        #expect(engine.isScheduled)
+        #expect(engine.secondsUntilStart == 60)
+
+        clock.advance(59)
+        engine.tick()
+        #expect(engine.phase == .setup)  // not yet
+
+        clock.advance(1)
+        engine.tick()
+        #expect(engine.phase == .running)
+        #expect(!engine.isScheduled)
+        #expect(engine.secondsUntilStart == nil)
+    }
+
+    @Test("A start that fires late is already elapsed, rather than starting at zero")
+    func lateStartCatchesUp() {
+        let (engine, clock) = makeEngine()
+        let scheduled = clock.current.addingTimeInterval(60)
+        engine.schedule(at: scheduled)
+
+        // Nothing ticks for six minutes — a sleeping Mac, say — so the schedule
+        // fires five minutes after the instant it was armed for.
+        clock.advance(360)
+        engine.tick()
+
+        #expect(engine.phase == .running)
+        #expect(engine.spent(engine.items[0]) == 300)
+        // Intro is budgeted 2 min, so it is already 3 min over.
+        #expect(engine.itemOverrun == 180)
+    }
+
+    @Test("The pre-start countdown ticks once each at 3, 2 and 1 seconds")
+    func preStartCountdownCues() {
+        let (engine, clock) = makeEngine()
+        engine.schedule(at: clock.current.addingTimeInterval(10))
+        _ = engine.consumeCues()
+
+        clock.advance(7)  // 3 seconds to go
+        engine.tick()
+        engine.tick()  // repeated ticks in the same second must not double-fire
+        #expect(engine.consumeCues().filter { $0 == .warning }.count == 1)
+
+        clock.advance(1)  // 2
+        engine.tick()
+        #expect(engine.consumeCues().filter { $0 == .warning }.count == 1)
+
+        clock.advance(1)  // 1
+        engine.tick()
+        #expect(engine.consumeCues().filter { $0 == .warning }.count == 1)
+
+        clock.advance(1)  // fires
+        engine.tick()
+        let atStart = engine.consumeCues()
+        #expect(atStart.contains(.itemChange))
+        #expect(engine.phase == .running)
+    }
+
+    @Test("No countdown cues fire while the start is still far off")
+    func noCuesLongBeforeStart() {
+        let (engine, clock) = makeEngine()
+        engine.schedule(at: clock.current.addingTimeInterval(600))
+        _ = engine.consumeCues()
+
+        clock.advance(300)
+        engine.tick()
+        #expect(engine.consumeCues().isEmpty)
+    }
+
+    @Test("Cancelling stops it firing")
+    func cancelSchedule() {
+        let (engine, clock) = makeEngine()
+        engine.schedule(at: clock.current.addingTimeInterval(10))
+        engine.cancelSchedule()
+        #expect(!engine.isScheduled)
+
+        clock.advance(60)
+        engine.tick()
+        #expect(engine.phase == .setup)
+        #expect(engine.consumeCues().isEmpty)
+    }
+
+    @Test("A time already in the past is refused, since there is nothing to wait for")
+    func pastTimeIsRefused() {
+        let (engine, clock) = makeEngine()
+        engine.schedule(at: clock.current.addingTimeInterval(-60))
+        #expect(!engine.isScheduled)
+        engine.tick()
+        #expect(engine.phase == .setup)
+    }
+
+    @Test("Arming is refused once running, and reset disarms")
+    func scheduleOnlyDuringSetup() {
+        let (engine, clock) = makeEngine()
+        engine.start()
+        engine.schedule(at: clock.current.addingTimeInterval(60))
+        #expect(!engine.isScheduled)
+
+        engine.reset()
+        engine.schedule(at: clock.current.addingTimeInterval(60))
+        #expect(engine.isScheduled)
+        engine.reset()
+        #expect(!engine.isScheduled)
+    }
+
+    @Test("A manual start produces no countdown cues")
+    func manualStartIsSilentBeforehand() {
+        let (engine, _) = makeEngine()
+        engine.start()
+        #expect(!engine.consumeCues().contains(.warning))
+    }
+
     @Test("An overrun is covered by slack and leaves the meeting total untouched")
     func overrunBorrowsFromSlack() {
         let (engine, clock) = makeEngine()
