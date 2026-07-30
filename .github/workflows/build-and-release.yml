@@ -50,11 +50,13 @@ jobs:
           path: .release/Legenda-v${{ steps.version.outputs.version }}.zip
           if-no-files-found: error
 
-      - name: Upload cask
+      # Both the rolling cask and the pinned one, so a failed PR step can still be
+      # completed by hand.
+      - name: Upload casks
         uses: actions/upload-artifact@v7
         with:
           name: legenda-cask
-          path: .release/legenda.rb
+          path: .release/legenda*.rb
           if-no-files-found: error
 
   # Only on a tag. Publishing needs no macOS, so this runs on Linux.
@@ -101,25 +103,10 @@ jobs:
       - name: Open cask PR against the tap
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          CASK_PATH: Casks/legenda.rb
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::warning title=Cask PR skipped::HOMEBREW_TAP_TOKEN is not set, so no PR was opened against $TAP. Add a PAT with Contents and Pull requests write on $TAP as the HOMEBREW_TAP_TOKEN secret, then copy the legenda-cask artifact into $CASK_PATH by hand for this release."
-            exit 0
-          fi
-
-          cask_b64="$(base64 -w0 <dist/legenda.rb)"
-
-          # An existing cask has to be updated by blob sha; a missing one 404s and
-          # is created instead.
-          existing_json="$(gh api "repos/$TAP/contents/$CASK_PATH?ref=main" 2>/dev/null || echo '{}')"
-          existing_sha="$(jq -r '.sha // empty' <<<"$existing_json")"
-          # GitHub wraps the base64 payload; base64 -w0 does not.
-          existing_b64="$(jq -r '.content // empty' <<<"$existing_json" | tr -d '\n')"
-
-          if [ -n "$existing_b64" ] && [ "$existing_b64" = "$cask_b64" ]; then
-            echo "::notice::$CASK_PATH is already identical at $VERSION; nothing to do."
+            echo "::warning title=Cask PR skipped::HOMEBREW_TAP_TOKEN is not set, so no PR was opened against $TAP. Add a PAT with Contents and Pull requests write on $TAP as the HOMEBREW_TAP_TOKEN secret, then copy the legenda-cask artifact into Casks/ by hand for this release."
             exit 0
           fi
 
@@ -132,14 +119,51 @@ jobs:
             || gh api -X PATCH "repos/$TAP/git/refs/heads/$branch" \
                  -f "sha=$base_sha" -F force=true >/dev/null
 
-          args=(-X PUT "repos/$TAP/contents/$CASK_PATH"
-                -f "message=legenda $VERSION"
-                -f "content=$cask_b64"
-                -f "branch=$branch")
-          if [ -n "$existing_sha" ]; then args+=(-f "sha=$existing_sha"); fi
+          # Commit one file to the branch. Returns 1 without committing when the
+          # content is already identical, so the caller can tell whether the PR has
+          # anything in it.
+          #
+          # Reads the existing blob against the *branch*, not main: the second call
+          # has to see what the first one committed.
+          commit_file() {
+            local path="$1" source="$2" message="$3"
+            local wanted current_json current_sha current_b64
 
-          commit="$(gh api "${args[@]}" --jq '.commit.sha')"
-          echo "::notice::Committed $commit to $TAP@$branch"
+            wanted="$(base64 -w0 <"$source")"
+            current_json="$(gh api "repos/$TAP/contents/$path?ref=$branch" 2>/dev/null || echo '{}')"
+            current_sha="$(jq -r '.sha // empty' <<<"$current_json")"
+            # GitHub wraps the base64 payload; base64 -w0 does not.
+            current_b64="$(jq -r '.content // empty' <<<"$current_json" | tr -d '\n')"
+
+            if [ -n "$current_b64" ] && [ "$current_b64" = "$wanted" ]; then
+              echo "::notice::$path is already identical; left alone."
+              return 1
+            fi
+
+            local args=(-X PUT "repos/$TAP/contents/$path"
+                        -f "message=$message"
+                        -f "content=$wanted"
+                        -f "branch=$branch")
+            if [ -n "$current_sha" ]; then args+=(-f "sha=$current_sha"); fi
+
+            local commit
+            commit="$(gh api "${args[@]}" --jq '.commit.sha')"
+            echo "::notice::Committed $path as $commit"
+            return 0
+          }
+
+          # The rolling cask moves to this version; the pinned one is added as a
+          # permanent record that can be installed directly.
+          changed=0
+          commit_file "Casks/legenda.rb" "dist/legenda.rb" "legenda $VERSION" && changed=1
+          commit_file "Casks/legenda@$VERSION.rb" "dist/legenda@$VERSION.rb" \
+            "legenda@$VERSION $VERSION" && changed=1
+
+          if [ "$changed" -eq 0 ]; then
+            echo "::notice::Both casks are already at $VERSION; no PR needed."
+            gh api -X DELETE "repos/$TAP/git/refs/heads/$branch" >/dev/null 2>&1 || true
+            exit 0
+          fi
 
           open_pr="$(gh pr list --repo "$TAP" --head "$branch" --state open --json url --jq '.[0].url // ""')"
           if [ -n "$open_pr" ]; then
