@@ -51,12 +51,15 @@ jobs:
           if-no-files-found: error
 
       # Both the rolling cask and the pinned one, so a failed PR step can still be
-      # completed by hand.
+      # completed by hand. Listed explicitly rather than globbed: .release is a
+      # hidden directory, and upload-artifact drops hidden paths from glob results.
       - name: Upload casks
         uses: actions/upload-artifact@v7
         with:
           name: legenda-cask
-          path: .release/legenda*.rb
+          path: |
+            .release/legenda.rb
+            .release/legenda@${{ steps.version.outputs.version }}.rb
           if-no-files-found: error
 
   # Only on a tag. Publishing needs no macOS, so this runs on Linux.
